@@ -1,17 +1,14 @@
 {
   "name": "linebot-webhook-render",
   "version": "1.0.0",
-  "type": "module",
   "main": "index.js",
+  "type": "module",
   "scripts": {
     "start": "node index.js"
   },
-  "engines": {
-    "node": "18.x"
-  },
   "dependencies": {
-    "express": "^4.18.2",
-    "axios": "^1.6.8",
-    "body-parser": "^1.20.2"
+    "@line/bot-sdk": "^7.5.0",
+    "axios": "^1.6.0",
+    "express": "^4.18.2"
   }
 }
