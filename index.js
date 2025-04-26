@@ -1,118 +1,78 @@
-import express from 'express';
-import bodyParser from 'body-parser';
-import axios from 'axios';
-
+const express = require('express');
+const { Client, middleware } = require('@line/bot-sdk');
+const fs = require('fs');
 const app = express();
-app.use(bodyParser.json());
+const port = process.env.PORT || 3000;
 
-const CHANNEL_ACCESS_TOKEN = process.env.CHANNEL_ACCESS_TOKEN || 'YOUR_CHANNEL_TOKEN';
+// ===== LINE Bot 設定 =====
+const config = {
+  channelAccessToken: 'ZfmREcmHR5OnAUUQGjnDvkxQVkr8ju0L/RmznL83iATN1K98yd4odv5/UhGW5gkKlezhS0V9+XRdcU2UHguy09igv4NVPrMPbnTrbYTMoanIOPOSl5uKm422cDHJq5ICBZ2VxLO5WrGn5YjhV+yOjwdB04t89/1O/w1cDnyilFU=',
+  channelSecret: 'e1ee87316fdb81cd7770bbcee472c245'
+};
 
-let groupIds = [];
-let userStatus = {};
-let scheduledStatus = false;
-let scheduledMessage = '';
+const client = new Client(config);
+app.use(express.json());
+app.use(middleware(config));
 
-// LINE webhook 入口
-app.post('/webhook', async (req, res) => {
-  const events = req.body.events || [];
-
-  for (const event of events) {
-    // 加入群組時自動記錄群組 ID
-    if (event.type === 'join' && event.source.type === 'group') {
-      const groupId = event.source.groupId;
-      if (!groupIds.includes(groupId)) {
-        groupIds.push(groupId);
-        await pushMessage(groupId, `✅ 已記錄群組 ID：${groupId}`);
-      }
-    }
-
-    // 有人在群組內發話時補記錄群組 ID（防 join event 遺失）
-    if (event.type === 'message' && event.source.type === 'group') {
-      const groupId = event.source.groupId;
-      if (!groupIds.includes(groupId)) {
-        groupIds.push(groupId);
-        await pushMessage(groupId, `⚠️ 發話補記錄群組 ID：${groupId}`);
-      }
-    }
-
-    // 處理私訊文字
-    if (event.type === 'message' && event.message.type === 'text' && event.source.type === 'user') {
-      const userId = event.source.userId;
-      const text = event.message.text.trim();
-      const replyToken = event.replyToken;
-
-      console.log(`💬 DM from ${userId}:`, text);
-
-      if (text === '開啟') {
-        userStatus[userId] = true;
-        await replyMessage(replyToken, '✅ 已開啟公告同步功能');
-      } else if (text === '關閉') {
-        userStatus[userId] = false;
-        await replyMessage(replyToken, '❌ 已關閉公告同步功能');
-      } else if (text.startsWith('更新內容：')) {
-        scheduledMessage = text.replace('更新內容：', '').trim();
-        await replyMessage(replyToken, `✅ 已更新定時內容為：「${scheduledMessage}」`);
-      } else if (text === '指令') {
-        await replyMessage(replyToken,
-          '📌 指令清單：\n'
-          + '開啟\n'
-          + '關閉\n'
-          + '更新內容：你的文字\n'
-          + '指令');
-      } else if (userStatus[userId]) {
-        for (const gid of groupIds) {
-          await pushMessage(gid, `📢 ${text}`);
-        }
-        await replyMessage(replyToken, '📨 已公告至所有群組');
-      } else {
-        await replyMessage(replyToken, '⚠️ 尚未開啟公告同步，請先輸入「開啟」');
-      }
-    }
-  }
-
-  res.sendStatus(200);
-});
-
-// IFTTT 觸發
-app.post('/ifttt', async (req, res) => {
-  if (scheduledStatus && scheduledMessage) {
-    for (const gid of groupIds) {
-      await pushMessage(gid, `🕓 ${scheduledMessage}`);
-    }
-    res.send('✅ 已定時推播');
-  } else {
-    res.send('⚠️ 未啟動定時或未設定內容');
-  }
-});
-
-// 測試首頁
-app.get('/', (req, res) => {
-  res.send('✅ LINE Webhook on Render is running.');
-});
-
-// 回覆私訊
-async function replyMessage(token, text) {
-  await axios.post(
-    'https://api.line.me/v2/bot/message/reply',
-    { replyToken: token, messages: [{ type: 'text', text }] },
-    { headers: { Authorization: `Bearer ${CHANNEL_ACCESS_TOKEN}` } }
-  );
-}
-
-// 推播群組
-async function pushMessage(to, text) {
+// ===== 群組記錄處理 =====
+const groupFile = 'groups.json';
+let groups = [];
+if (fs.existsSync(groupFile)) {
   try {
-    await axios.post(
-      'https://api.line.me/v2/bot/message/push',
-      { to, messages: [{ type: 'text', text }] },
-      { headers: { Authorization: `Bearer ${CHANNEL_ACCESS_TOKEN}` } }
-    );
+    groups = JSON.parse(fs.readFileSync(groupFile));
   } catch (e) {
-    console.error('❌ push error:', e.response?.data || e.message);
+    console.error('讀取群組資料錯誤，初始化為空：', e);
+    groups = [];
   }
 }
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`✅ Server running on port ${PORT}`);
+// ===== Webhook 主入口 =====
+app.post('/webhook', async (req, res) => {
+  try {
+    await Promise.all(req.body.events.map(handleEvent));
+    res.status(200).end();
+  } catch (err) {
+    console.error('Webhook 錯誤：', err);
+    res.status(500).end();
+  }
+});
+
+// ===== 處理 LINE 各類事件 =====
+async function handleEvent(event) {
+  if (event.type === 'message' && event.message.type === 'text') {
+    const message = event.message.text;
+
+    // 加入群組時自動記錄 groupId
+    if (event.source.type === 'group') {
+      const groupId = event.source.groupId;
+      if (!groups.includes(groupId)) {
+        groups.push(groupId);
+        fs.writeFileSync(groupFile, JSON.stringify(groups));
+        console.log('新群組已加入：', groupId);
+      }
+    }
+
+    // 私訊轉發到所有已儲存群組
+    if (event.source.type === 'user') {
+      const pushText = `[同步訊息]\n${message}`;
+      for (const groupId of groups) {
+        try {
+          await client.pushMessage(groupId, { type: 'text', text: pushText });
+        } catch (e) {
+          console.warn(`推送至群組 ${groupId} 失敗：`, e.message);
+        }
+      }
+    }
+  }
+
+  return Promise.resolve();
+}
+
+// ===== Render 預設根目錄檢查用 =====
+app.get('/', (req, res) => {
+  res.send('✅ LINE Webhook 運作中');
+});
+
+app.listen(port, () => {
+  console.log(`✅ 伺服器啟動，監聽於 port ${port}`);
 });
