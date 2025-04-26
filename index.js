@@ -5,18 +5,18 @@ import axios from 'axios';
 const app = express();
 app.use(bodyParser.json());
 
-const PORT = process.env.PORT || 3000;
+const CHANNEL_ACCESS_TOKEN = process.env.CHANNEL_ACCESS_TOKEN || 'YOUR_CHANNEL_TOKEN';
 
-// Webhook 路由 (LINE 驗證)
 app.post('/webhook', (req, res) => {
-  console.log('📩 收到 LINE webhook:', req.body);
+  console.log('📥 LINE webhook received:', JSON.stringify(req.body));
   res.sendStatus(200);
 });
 
 app.get('/', (req, res) => {
-  res.send('✅ LINE Bot Railway 版本運作中');
+  res.send('✅ LINE Webhook on Render is running.');
 });
 
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`✅ Server running on port ${PORT}`);
+  console.log(`🚀 Server running on port ${PORT}`);
 });
