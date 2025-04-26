@@ -9,13 +9,11 @@ app.use(bodyParser.json());
 const CHANNEL_ACCESS_TOKEN = 'ZfmREcmHR5OnAUUQGjnDvkxQVkr8ju0L/RmznL83iATN1K98yd4odv5/UhGW5gkKlezhS0V9+XRdcU2UHguy09igv4NVPrMPbnTrbYTMoanIOPOSl5uKm422cDHJq5ICBZ2VxLO5WrGn5YjhV+yOjwdB04t89/1O/w1cDnyilFU=';
 
 let groupIds = [];
-let userStatus = {};
 let scheduledStatus = false;
 let scheduledMessage = '';
 
 const GROUP_FILE = './groups.json';
 
-// 載入群組資料
 async function loadGroups() {
   try {
     groupIds = await fs.readJson(GROUP_FILE);
@@ -26,86 +24,78 @@ async function loadGroups() {
   }
 }
 
-// 儲存群組資料
 async function saveGroups() {
   await fs.writeJson(GROUP_FILE, groupIds);
 }
 
-// 根目錄
 app.get('/', (req, res) => res.send('✅ LINE 機器人已正常運行'));
 
-// LINE Webhook處理入口
 app.post('/', async (req, res) => {
   const events = req.body.events || [];
 
   for (const event of events) {
+    const { type, source, message, replyToken } = event;
 
-    // 加入群組自動記錄
-    if (event.type === 'join' && event.source.type === 'group') {
-      const groupId = event.source.groupId;
-      if (!groupIds.includes(groupId)) {
-        groupIds.push(groupId);
+    // 自動記錄群組 ID（加入或講話）
+    if (source?.type === 'group') {
+      const gid = source.groupId;
+      if (!groupIds.includes(gid)) {
+        groupIds.push(gid);
         await saveGroups();
-      }
-      await pushMessage(groupId, `✅ 已記錄群組 ID：${groupId}`);
-    }
-
-    // 群組內發訊息自動補記錄
-    if (event.type === 'message' && event.source.type === 'group') {
-      const groupId = event.source.groupId;
-      if (!groupIds.includes(groupId)) {
-        groupIds.push(groupId);
-        await saveGroups();
-        await pushMessage(groupId, `✅ 已記錄群組 ID：${groupId}`);
+        if (type === 'join') {
+          await pushMessage(gid, `✅ 已記錄群組 ID：${gid}`);
+        } else if (type === 'message') {
+          await pushMessage(gid, `✅ 已補記錄群組 ID：${gid}`);
+        }
       }
     }
 
-    // 私訊指令與同步公告功能
-    if (event.type === 'message'
-        && event.message.type === 'text'
-        && event.source.type === 'user') {
-      const userId = event.source.userId;
-      const text = event.message.text.trim();
-      const replyToken = event.replyToken;
+    // 私訊功能區
+    if (type === 'message' && message.type === 'text' && source.type === 'user') {
+      const text = message.text.trim();
 
-      if (text === '開啟定時') {
+      if (text === '開啟') {
         scheduledStatus = true;
-        await replyMessage(replyToken, '✅ 已開啟每4小時自動發送');
-      } else if (text === '關閉定時') {
+        await replyMessage(replyToken, '✅ 已啟用定時訊息（IFTTT 將可觸發）');
+      } else if (text === '關閉') {
         scheduledStatus = false;
-        await replyMessage(replyToken, '❌ 已關閉自動發送');
-      } else if (text.startsWith('更新內容：')) {
-        scheduledMessage = text.replace('更新內容：', '').trim();
-        await replyMessage(replyToken, `✅ 已更新定時內容：「${scheduledMessage}」`);
+        await replyMessage(replyToken, '❌ 已關閉定時訊息');
+      } else if (text === '同步群組') {
+        const newGroupIds = [];
+        for (const e of events) {
+          if (e.source?.type === 'group') {
+            const gid = e.source.groupId;
+            if (!groupIds.includes(gid)) {
+              groupIds.push(gid);
+              newGroupIds.push(gid);
+            }
+          }
+        }
+        if (newGroupIds.length > 0) {
+          await saveGroups();
+          await replyMessage(replyToken, `✅ 已補記錄 ${newGroupIds.length} 個群組`);
+        } else {
+          await replyMessage(replyToken, '⚠️ 沒有新群組需要補記錄');
+        }
       } else if (text === '指令') {
         await replyMessage(replyToken,
           '📌 指令清單：\n'
-          + '開啟定時\n'
-          + '關閉定時\n'
-          + '更新內容：你的文字\n'
-          + '指令\n'
-          + '開啟\n'
-          + '關閉');
-      } else if (text === '開啟') {
-        userStatus[userId] = true;
-        await replyMessage(replyToken, '✅ 已開啟同步公告');
-      } else if (text === '關閉') {
-        userStatus[userId] = false;
-        await replyMessage(replyToken, '❌ 已關閉同步公告');
-      } else if (userStatus[userId]) {
-        for (const gid of groupIds) {
-          await pushMessage(gid, `📢 ${text}`);
-        }
-        await replyMessage(replyToken, '📨 已公告至所有群組');
+          + '開啟（IFTTT 啟用）\n'
+          + '關閉（IFTTT 停用）\n'
+          + '同步群組（補記群 ID）\n'
+          + '指令（查看這個清單）\n\n'
+          + '📩 輸入任意文字會直接更新定時訊息內容');
       } else {
-        await replyMessage(replyToken, '⚠️ 尚未開啟公告同步，請先輸入「開啟」');
+        scheduledMessage = text;
+        await replyMessage(replyToken, `✅ 已更新定時內容：「${scheduledMessage}」`);
       }
     }
   }
+
   res.sendStatus(200);
 });
 
-// IFTTT觸發端點
+// IFTTT 定時推播觸發
 app.post('/ifttt', async (req, res) => {
   if (scheduledStatus && scheduledMessage) {
     for (const gid of groupIds) {
@@ -113,18 +103,18 @@ app.post('/ifttt', async (req, res) => {
     }
     res.send('✅ 已定時推播');
   } else {
-    res.send('⚠️ 未啟動定時或未設定內容');
+    res.send('⚠️ 未啟用定時訊息或未設定內容');
   }
 });
 
-// 回覆私訊函數
+// LINE 回覆私訊
 async function replyMessage(token, text) {
   await axios.post('https://api.line.me/v2/bot/message/reply',
     { replyToken: token, messages: [{ type: 'text', text }] },
     { headers: { Authorization: `Bearer ${CHANNEL_ACCESS_TOKEN}` } });
 }
 
-// 主動推播函數
+// LINE 主動推播
 async function pushMessage(to, text) {
   try {
     await axios.post('https://api.line.me/v2/bot/message/push',
@@ -135,9 +125,9 @@ async function pushMessage(to, text) {
   }
 }
 
-// 啟動伺服器並載入群組
+// 啟動伺服器
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
   await loadGroups();
-  console.log(`✅ 伺服器已啟動於 port ${PORT}`);
+  console.log(`✅ 伺服器啟動於 port ${PORT}`);
 });
